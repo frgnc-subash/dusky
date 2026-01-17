@@ -2,10 +2,11 @@
 # -----------------------------------------------------------------------------
 # Script: warp-toggle.sh
 # Description: Robust toggle for Cloudflare WARP with UWSM/Hyprland notifications.
-#              Supports --connect and --disconnect flags.
+#              Automatically handles TOS acceptance if pending.
+#              also supports --disconnect and --connect flags
 # Author: Elite DevOps
 # Environment: Arch Linux / Hyprland / UWSM
-# Dependencies: warp-cli, libnotify (notify-send) [optional]
+# Dependencies: warp-cli, libnotify (notify-send) [optional], util-linux (script)
 # -----------------------------------------------------------------------------
 
 # --- Strict Mode ---
@@ -20,12 +21,12 @@ readonly ICON_WAIT="network-transmit-receive"
 readonly ICON_ERR="dialog-error"
 
 # --- Runtime Checks ---
-# Cache notify-send availability once to avoid repetitive syscalls
+# Cache notify-send availability
 HAS_NOTIFY=0
 command -v notify-send &>/dev/null && HAS_NOTIFY=1
 readonly HAS_NOTIFY
 
-# --- Styling (ANSI Colors with TTY detection) ---
+# --- Styling ---
 if [[ -t 1 ]]; then
     readonly C_RESET=$'\033[0m' C_BOLD=$'\033[1m'
     readonly C_GREEN=$'\033[1;32m' C_BLUE=$'\033[1;34m'
@@ -34,7 +35,7 @@ else
     readonly C_RESET='' C_BOLD='' C_GREEN='' C_BLUE='' C_RED='' C_YELLOW=''
 fi
 
-# --- Logging Functions ---
+# --- Logging ---
 log_info()    { printf "%s[INFO]%s %s\n" "$C_BLUE" "$C_RESET" "${1:-}"; }
 log_success() { printf "%s[OK]%s   %s\n" "$C_GREEN" "$C_RESET" "${1:-}"; }
 log_warn()    { printf "%s[WARN]%s %s\n" "$C_YELLOW" "$C_RESET" "${1:-}" >&2; }
@@ -43,31 +44,53 @@ log_error()   { printf "%s[ERR]%s  %s\n" "$C_RED" "$C_RESET" "${1:-}" >&2; }
 # --- Notification Helper ---
 notify_user() {
     (( HAS_NOTIFY )) || return 0
-    
     local title="${1:-Notification}"
     local message="${2:-}"
     local urgency="${3:-low}"
     local icon="${4:-$ICON_WAIT}"
-    
-    # 1. '--' guards against title being parsed as a flag
-    # 2. '|| true' prevents crash if notification daemon is dead/restarting
     notify-send -u "$urgency" -a "$APP_NAME" -i "$icon" -- "$title" "$message" 2>/dev/null || true
 }
 
 # --- Core Logic ---
 
+ensure_tos_accepted() {
+    # Check 1: Does 'warp-cli status' run cleanly and output "Status update"?
+    # If it fails (exit code != 0) OR doesn't contain "Status update", we assume TOS is blocking.
+    if ! warp-cli status 2>&1 | grep -q "Status update"; then
+        log_info "Valid status not found (Possible pending TOS). Attempting auto-acceptance..."
+
+        # Temporarily disable pipefail so 'echo' closing the pipe doesn't crash the script
+        set +o pipefail
+        
+        # PTY TRICK: Emulate a terminal using 'script' so warp-cli accepts the piped 'y'
+        # We redirect all output to /dev/null to keep it clean
+        if { sleep 0.5; echo "y"; } | script -q -c "warp-cli status" /dev/null >/dev/null 2>&1; then
+            log_success "TOS acceptance sequence completed."
+        else
+            log_warn "TOS acceptance sequence ran but returned an error."
+        fi
+        
+        set -o pipefail
+    fi
+}
+
 get_warp_status() {
     local output status
-    output=$(warp-cli status 2>/dev/null) || return 1
+    # Capture stderr too just in case, but we mainly want stdout
+    output=$(warp-cli status 2>&1) || return 1
     
-    # Robust awk: uses [[:space:]] to catch tabs, spaces, and potential \r
+    # Check if the command actually gave us a status update
+    if [[ ! "$output" =~ "Status update" ]]; then
+        return 1
+    fi
+
+    # Robust awk to extract the status value
     status=$(awk -F': ' '/Status update/ {
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
         print $2
         exit
     }' <<< "$output")
 
-    # Fail if status is empty to prevent logic errors
     if [[ -n "$status" ]]; then
         printf '%s' "$status"
         return 0
@@ -98,7 +121,6 @@ wait_for_connection() {
         fi
 
         sleep 1
-        # Pre-increment (++timer) avoids 'set -e' exit trigger on 0
         (( ++timer ))
     done
 
@@ -109,7 +131,6 @@ wait_for_connection() {
 
 disconnect_warp() {
     log_info "Disconnecting..."
-    
     if warp-cli disconnect &>/dev/null; then
         log_success "Disconnected successfully."
         notify_user "Disconnected" "Secure tunnel closed." "low" "$ICON_DISC"
@@ -122,7 +143,6 @@ disconnect_warp() {
 }
 
 show_help() {
-    # ${0##*/} is a faster, pure-bash alternative to $(basename "$0")
     cat <<EOF
 Usage: ${0##*/} [OPTIONS]
 
@@ -135,41 +155,33 @@ EOF
 }
 
 main() {
-    # Dependency Check
+    # 1. Dependency Check
     if ! command -v warp-cli &>/dev/null; then
         log_error "warp-cli not found. Please install 'cloudflare-warp-bin'."
         exit 1
     fi
 
-    # Argument Parsing
+    # 2. Ensure TOS is accepted BEFORE checking status
+    #    This prevents "Unknown" status errors caused by the TOS prompt.
+    ensure_tos_accepted
+
+    # 3. Argument Parsing
     local action="toggle"
-    
     while (( $# > 0 )); do
         case "$1" in
-            --connect)
-                action="connect"
-                ;;
-            --disconnect)
-                action="disconnect"
-                ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
-            *)
-                log_error "Unknown option: $1"
-                show_help
-                exit 1
-                ;;
+            --connect)    action="connect" ;;
+            --disconnect) action="disconnect" ;;
+            -h|--help)    show_help; exit 0 ;;
+            *)            log_error "Unknown option: $1"; show_help; exit 1 ;;
         esac
         shift
     done
 
-    # Get Status
+    # 4. Get Status (Should work now that TOS is handled)
     local status
     status=$(get_warp_status) || status="Unknown"
 
-    # Execution Logic
+    # 5. Execution Logic
     case "$action" in
         "connect")
             if [[ "$status" == "Connected" ]]; then
@@ -178,7 +190,6 @@ main() {
                 wait_for_connection
             fi
             ;;
-            
         "disconnect")
             if [[ "$status" == "Disconnected" ]]; then
                 log_success "Already Disconnected. No action taken."
@@ -186,7 +197,6 @@ main() {
                 disconnect_warp
             fi
             ;;
-            
         "toggle")
             log_info "Current Status: ${C_BOLD}${status}${C_RESET}"
             case "$status" in
@@ -197,6 +207,7 @@ main() {
                     wait_for_connection
                     ;;
                 *)
+                    # If status is still Unknown, we try connecting anyway.
                     log_warn "Unknown status detected: '$status'. Attempting to connect."
                     wait_for_connection
                     ;;
