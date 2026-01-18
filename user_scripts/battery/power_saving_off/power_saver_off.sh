@@ -77,7 +77,7 @@ gum style --border normal --border-foreground 196 --foreground 196 \
 if sudo -v; then
     start_sudo_keepalive
     run_module "${MODULES_DIR}/03_root_ops.sh" "Module 03: Root Operations..."
-    run_module "${MODULES_DIR}/06_service_restorer.sh" "Module 06: Services..."
+    run_module "${MODULES_DIR}/06_service_restorer.sh" "Module 06: Services..." || true
 else
     log_error "Sudo authentication failed. Skipping root modules."
 fi

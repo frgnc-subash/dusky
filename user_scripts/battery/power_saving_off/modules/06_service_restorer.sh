@@ -39,7 +39,6 @@ readonly -a TARGET_PROCESSES=(
 #    - Runs natively as YOU.
 readonly -a TARGET_USER_SERVICES=(
     "battery_notify"
-    "blueman-applet"
     "hypridle"
     "swaync"
     "gvfs-daemon"
