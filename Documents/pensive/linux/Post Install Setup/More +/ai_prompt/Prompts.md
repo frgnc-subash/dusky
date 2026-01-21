@@ -98,12 +98,17 @@
 >    - Identify loops that can be replaced by mapfiles or builtins.
 >    - Remove unnecessary external binary calls where possible. 
 > 
-> 6. *Reliablity o*
+> 6. **Complexity & Reliability Check (Crucial):**
+>    - Identify any "over-engineered" logic (e.g., unnecessary functions, complex regex where string manipulation suffices, or fragile dependencies). 
+>    - **Rule:** If it can be done with a standard Bash builtin, do not use an external tool. 
+>    - **Rule:** If it breaks easily, rewrite it to be "boring" and robust.
+>
+>
 > </audit_instructions>
 > 
 > <output_format>
-> 7. **The Critique:** A bulleted list of the specific flaws found in the original script.
-> 8. **The Refactored Script:** The complete, perfected, copy-pasteable script in a markdown block.
+> 8. **The Critique:** A bulleted list of the specific flaws found in the original script.
+> 9. **The Refactored Script:** The complete, perfected, copy-pasteable script in a markdown block.
 > </output_format>
 > 
 > 
